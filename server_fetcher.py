@@ -1,7 +1,9 @@
 """
-🍌 Banana Server Fetcher - Python Proxy Server
-Handles Roblox API requests to prevent rate limiting
-✅ IMPROVED: Auto-refills cache to maintain 250+ servers
+🍌 Banana Server Fetcher - COMPLETE VERSION
+✅ Auto-refills cache (250-500 servers)
+✅ Filters full servers
+✅ Rate limit protection
+✅ Shuffles for variety
 """
 
 from flask import Flask, jsonify, request
@@ -10,6 +12,7 @@ import requests
 import time
 import json
 import os
+import random
 from threading import Lock, Thread
 
 app = Flask(__name__)
@@ -20,23 +23,21 @@ PORT = int(os.environ.get("PORT", 5000))
 # Configuration
 ROBLOX_API_BASE = "https://games.roblox.com/v1/games"
 CACHE_FILE = "server_cache.json"
-CACHE_EXPIRY_MINUTES = int(os.environ.get("CACHE_EXPIRY_MINUTES", 45))  # ✅ Increased to 45 min
-REQUEST_COOLDOWN = int(os.environ.get("REQUEST_COOLDOWN", 5))  # ✅ Increased to 5 seconds
+CACHE_EXPIRY_MINUTES = int(os.environ.get("CACHE_EXPIRY_MINUTES", 45))
+REQUEST_COOLDOWN = int(os.environ.get("REQUEST_COOLDOWN", 5))
 
-# ✅ NEW: Auto-refill settings
-MIN_CACHE_SIZE = 250  # Auto-fetch more when cache drops below this
-TARGET_CACHE_SIZE = 500  # Try to maintain this many servers
+MIN_CACHE_SIZE = 250
+TARGET_CACHE_SIZE = 500
 
-# Global cache and state
 cache = {
     "servers": {},
-    "last_request": 0
+    "last_request": 0,
+    "last_rate_limit": 0
 }
 cache_lock = Lock()
 fetch_in_progress = {}
 
 def load_cache():
-    """Load cache from file"""
     global cache
     if os.path.exists(CACHE_FILE):
         try:
@@ -45,10 +46,9 @@ def load_cache():
             print(f"[Cache] Loaded cache from file")
         except Exception as e:
             print(f"[Cache] Error loading cache: {e}")
-            cache = {"servers": {}, "last_request": 0}
+            cache = {"servers": {}, "last_request": 0, "last_rate_limit": 0}
 
 def save_cache():
-    """Save cache to file"""
     try:
         with open(CACHE_FILE, 'w') as f:
             json.dump(cache, f, indent=2)
@@ -56,7 +56,6 @@ def save_cache():
         print(f"[Cache] Error saving cache: {e}")
 
 def is_cache_valid(place_id):
-    """Check if cache for place_id is still valid"""
     if str(place_id) not in cache["servers"]:
         return False
     
@@ -67,25 +66,23 @@ def is_cache_valid(place_id):
     return age_minutes < CACHE_EXPIRY_MINUTES
 
 def fetch_from_roblox(place_id, cursor=None, exclude_full=False):
-    """Fetch servers from Roblox API with rate limiting"""
     global cache
     
     with cache_lock:
-        # ✅ Check if we're already rate limited
+        # Check if we're in cooldown from rate limit
         last_error_time = cache.get("last_rate_limit", 0)
         if time.time() - last_error_time < 60:
             wait_remaining = 60 - (time.time() - last_error_time)
             print(f"[RateLimit] Still in cooldown, {wait_remaining:.0f}s remaining")
             return {"error": "rate_limited", "retry_after": int(wait_remaining)}
         
-        # Rate limiting
+        # Normal rate limiting
         time_since_last = time.time() - cache.get("last_request", 0)
         if time_since_last < REQUEST_COOLDOWN:
             wait_time = REQUEST_COOLDOWN - time_since_last
             print(f"[RateLimit] Waiting {wait_time:.2f}s...")
             time.sleep(wait_time)
         
-        # Build URL
         url = f"{ROBLOX_API_BASE}/{place_id}/servers/Public?limit=100"
         url += f"&excludeFullGames={str(exclude_full).lower()}"
         if cursor:
@@ -99,12 +96,10 @@ def fetch_from_roblox(place_id, cursor=None, exclude_full=False):
             
             if response.status_code == 200:
                 data = response.json()
-                # ✅ Clear rate limit flag on success
                 cache["last_rate_limit"] = 0
                 print(f"[Roblox] Success! Got {len(data.get('data', []))} servers")
                 return data
             elif response.status_code == 429:
-                # ✅ Mark when we got rate limited
                 cache["last_rate_limit"] = time.time()
                 print(f"[Roblox] Rate limited! Cooling down for 60s")
                 return {"error": "rate_limited", "retry_after": 60}
@@ -117,7 +112,6 @@ def fetch_from_roblox(place_id, cursor=None, exclude_full=False):
             return {"error": str(e)}
 
 def update_cache(place_id, servers, cursor=None):
-    """Update cache with new server data"""
     global cache
     
     place_id_str = str(place_id)
@@ -131,8 +125,7 @@ def update_cache(place_id, servers, cursor=None):
     
     place_cache = cache["servers"][place_id_str]
     
-    # ✅ Filter and prioritize servers
-    # First, separate full and non-full servers
+    # ✅ FILTER AND PRIORITIZE SERVERS
     non_full_servers = []
     full_servers = []
     
@@ -142,33 +135,30 @@ def update_cache(place_id, servers, cursor=None):
         if server["id"] in existing_ids:
             continue
             
-        # Check if server is full or nearly full
         playing = server.get("playing", 0)
         max_players = server.get("maxPlayers", 0)
         
         if max_players > 0:
             fill_percent = (playing / max_players) * 100
             
-            if fill_percent >= 95:  # Server is 95%+ full
+            if fill_percent >= 90:  # 90%+ = full
                 full_servers.append(server)
             else:
                 non_full_servers.append(server)
         else:
             non_full_servers.append(server)
     
-    # ✅ Shuffle both lists for randomization
-    import random
+    # ✅ SHUFFLE FOR RANDOMIZATION
     random.shuffle(non_full_servers)
     random.shuffle(full_servers)
     
-    # ✅ Prioritize non-full servers, then add full servers
+    # ✅ PRIORITIZE NON-FULL SERVERS
     new_servers = non_full_servers + full_servers
     
     place_cache["servers"].extend(new_servers)
     place_cache["cursor"] = cursor
     place_cache["timestamp"] = time.time()
     
-    # Limit cache size
     if len(place_cache["servers"]) > TARGET_CACHE_SIZE:
         place_cache["servers"] = place_cache["servers"][:TARGET_CACHE_SIZE]
     
@@ -178,60 +168,48 @@ def update_cache(place_id, servers, cursor=None):
     return len(new_servers)
 
 def background_refill_cache(place_id, exclude_full):
-    """Background task to refill cache"""
     place_id_str = str(place_id)
     
-    # Check if already fetching
     if fetch_in_progress.get(place_id_str, False):
-        print(f"[AutoRefill] Already fetching for {place_id}")
         return
     
     fetch_in_progress[place_id_str] = True
     
     try:
-        print(f"[AutoRefill] Starting background refill for {place_id}...")
+        print(f"[AutoRefill] Starting for {place_id}...")
         
-        # ✅ Start from random cursor to get variety of servers (not just newest)
         cursor = None
         if place_id_str in cache["servers"]:
             cursor = cache["servers"][place_id_str].get("cursor")
-            # 50% chance to skip ahead to get older servers
-            if cursor and len(cache["servers"][place_id_str]["servers"]) < 100:
-                print(f"[AutoRefill] Using existing cursor to continue pagination")
-            else:
-                # Fetch from beginning to get fresh servers
-                cursor = None
         
         attempts = 0
         max_attempts = 5
         
         while attempts < max_attempts:
-            # Check current cache size
             current_size = len(cache["servers"].get(place_id_str, {}).get("servers", []))
             
             if current_size >= TARGET_CACHE_SIZE:
-                print(f"[AutoRefill] Cache full ({current_size} servers), stopping")
+                print(f"[AutoRefill] Cache full ({current_size}), stopping")
                 break
             
-            print(f"[AutoRefill] Fetching more servers (current: {current_size})...")
+            print(f"[AutoRefill] Fetching (current: {current_size})...")
             
             result = fetch_from_roblox(place_id, cursor, exclude_full)
             
             if "error" in result:
-                print(f"[AutoRefill] Fetch failed: {result['error']}")
+                print(f"[AutoRefill] Failed: {result['error']}")
                 break
             
             servers = result.get("data", [])
             next_cursor = result.get("nextPageCursor")
             
-            if not servers or len(servers) == 0:
-                print(f"[AutoRefill] No more servers available")
+            if not servers:
+                print(f"[AutoRefill] No more servers")
                 break
             
             added = update_cache(place_id, servers, next_cursor)
             
             if added == 0:
-                print(f"[AutoRefill] All servers already cached")
                 if next_cursor:
                     cursor = next_cursor
                     attempts += 1
@@ -242,39 +220,28 @@ def background_refill_cache(place_id, exclude_full):
             cursor = next_cursor
             
             if not cursor:
-                print(f"[AutoRefill] Reached end of server list")
                 break
             
             attempts += 1
-            
-            # Small delay between fetches
             time.sleep(3)
         
         final_size = len(cache["servers"].get(place_id_str, {}).get("servers", []))
-        print(f"[AutoRefill] Complete! Cache now has {final_size} servers")
+        print(f"[AutoRefill] Done! Cache: {final_size} servers")
         
     finally:
         fetch_in_progress[place_id_str] = False
 
 @app.route('/')
 def home():
-    """Home endpoint"""
     return jsonify({
         "status": "online",
         "service": "Banana Server Fetcher",
-        "version": "2.0 - Auto-Refill",
-        "deployed_on": "Railway",
-        "endpoints": {
-            "/servers": "GET - Fetch servers for a place",
-            "/cache/info": "GET - Get cache info",
-            "/cache/clear": "POST - Clear cache",
-            "/health": "GET - Health check"
-        }
+        "version": "3.0 - Complete",
+        "features": ["Auto-refill", "Filter full servers", "Rate limit protection", "Shuffling"]
     })
 
 @app.route('/servers', methods=['GET'])
 def get_servers():
-    """Main endpoint with auto-refill"""
     place_id = request.args.get('placeId')
     exclude_full = request.args.get('excludeFull', 'false').lower() == 'true'
     force_refresh = request.args.get('forceRefresh', 'false').lower() == 'true'
@@ -290,7 +257,6 @@ def get_servers():
     
     place_id_str = str(place_id)
     
-    # Initialize cache if needed
     if place_id_str not in cache["servers"]:
         cache["servers"][place_id_str] = {
             "servers": [],
@@ -301,18 +267,14 @@ def get_servers():
     place_cache = cache["servers"][place_id_str]
     current_size = len(place_cache["servers"])
     
-    # ✅ Check if we need to refill cache
+    # Auto-refill if low
     if current_size < MIN_CACHE_SIZE and is_cache_valid(place_id):
-        print(f"[Cache] Low cache ({current_size} servers), triggering auto-refill...")
-        # Start background refill
+        print(f"[Cache] Low ({current_size}), auto-refilling...")
         Thread(target=background_refill_cache, args=(place_id, exclude_full), daemon=True).start()
     
-    # Return servers from cache if available
+    # Return from cache if available
     if current_size > 0 and is_cache_valid(place_id) and not force_refresh:
-        print(f"[Cache] Serving from cache ({current_size} available)")
         servers = place_cache["servers"][:count]
-        
-        # Remove returned servers
         cache["servers"][place_id_str]["servers"] = place_cache["servers"][count:]
         save_cache()
         
@@ -323,12 +285,11 @@ def get_servers():
             "placeId": place_id,
             "servers": servers,
             "count": len(servers),
-            "remaining": remaining,
-            "timestamp": place_cache["timestamp"]
+            "remaining": remaining
         })
     
-    # Need to fetch fresh data
-    print(f"[API] Fetching fresh data for {place_id}...")
+    # Fetch fresh
+    print(f"[API] Fetching fresh for {place_id}...")
     
     cursor = place_cache.get("cursor")
     result = fetch_from_roblox(place_id, cursor, exclude_full)
@@ -346,7 +307,7 @@ def get_servers():
     
     return_servers = servers[:count]
     
-    # Trigger background refill if cache is low
+    # Trigger refill if needed
     if len(cache["servers"][place_id_str]["servers"]) < MIN_CACHE_SIZE:
         Thread(target=background_refill_cache, args=(place_id, exclude_full), daemon=True).start()
     
@@ -354,14 +315,11 @@ def get_servers():
         "source": "roblox",
         "placeId": place_id,
         "servers": return_servers,
-        "count": len(return_servers),
-        "nextCursor": next_cursor,
-        "timestamp": time.time()
+        "count": len(return_servers)
     })
 
 @app.route('/cache/info', methods=['GET'])
 def cache_info():
-    """Get cache information"""
     info = {}
     
     for place_id, data in cache["servers"].items():
@@ -369,23 +327,19 @@ def cache_info():
         info[place_id] = {
             "servers": len(data.get("servers", [])),
             "age_minutes": round(age_minutes, 2),
-            "has_cursor": data.get("cursor") is not None,
             "is_valid": age_minutes < CACHE_EXPIRY_MINUTES,
             "fetching": fetch_in_progress.get(place_id, False)
         }
     
     return jsonify({
         "cache": info,
-        "last_request": cache.get("last_request", 0),
         "cooldown_seconds": REQUEST_COOLDOWN,
-        "cache_expiry_minutes": CACHE_EXPIRY_MINUTES,
-        "min_cache_size": MIN_CACHE_SIZE,
-        "target_cache_size": TARGET_CACHE_SIZE
+        "min_cache": MIN_CACHE_SIZE,
+        "target_cache": TARGET_CACHE_SIZE
     })
 
 @app.route('/cache/clear', methods=['POST'])
 def clear_cache():
-    """Clear cache"""
     global cache
     
     place_id = request.args.get('placeId')
@@ -394,39 +348,35 @@ def clear_cache():
         if str(place_id) in cache["servers"]:
             del cache["servers"][str(place_id)]
             save_cache()
-            return jsonify({"message": f"Cache cleared for place {place_id}"})
-        else:
-            return jsonify({"error": f"No cache for place {place_id}"}), 404
+            return jsonify({"message": f"Cleared {place_id}"})
+        return jsonify({"error": f"No cache for {place_id}"}), 404
     else:
-        cache = {"servers": {}, "last_request": 0}
+        cache = {"servers": {}, "last_request": 0, "last_rate_limit": 0}
         save_cache()
         return jsonify({"message": "All cache cleared"})
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
-    total_cached = sum(len(data.get("servers", [])) for data in cache["servers"].values())
-    
+    total = sum(len(d.get("servers", [])) for d in cache["servers"].values())
     return jsonify({
         "status": "healthy",
-        "uptime": time.time(),
         "cached_places": len(cache["servers"]),
-        "total_servers_cached": total_cached,
-        "port": PORT
+        "total_servers": total
     })
 
 if __name__ == '__main__':
     load_cache()
     
-    print("=" * 50)
-    print("🍌 Banana Server Fetcher v2.0 Started")
-    print("=" * 50)
-    print(f"Environment: {'Railway' if os.environ.get('RAILWAY_ENVIRONMENT') else 'Local'}")
+    print("=" * 60)
+    print("🍌 Banana Server Fetcher v3.0 COMPLETE")
+    print("=" * 60)
     print(f"Port: {PORT}")
-    print(f"Cache expiry: {CACHE_EXPIRY_MINUTES} minutes")
-    print(f"Request cooldown: {REQUEST_COOLDOWN} seconds")
-    print(f"Min cache size: {MIN_CACHE_SIZE} servers")
-    print(f"Target cache size: {TARGET_CACHE_SIZE} servers")
-    print("=" * 50)
+    print(f"Cache expiry: {CACHE_EXPIRY_MINUTES} min")
+    print(f"Request cooldown: {REQUEST_COOLDOWN}s")
+    print(f"Cache size: {MIN_CACHE_SIZE}-{TARGET_CACHE_SIZE} servers")
+    print("✅ Auto-refill enabled")
+    print("✅ Full server filtering enabled")
+    print("✅ Rate limit protection enabled")
+    print("=" * 60)
     
     app.run(host='0.0.0.0', port=PORT, debug=False)
