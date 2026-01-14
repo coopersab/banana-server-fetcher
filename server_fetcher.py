@@ -136,17 +136,20 @@ def update_cache(place_id, servers, cursor=None):
             continue
             
         playing = server.get("playing", 0)
-        max_players = server.get("maxPlayers", 0)
+        max_players = server.get("maxPlayers", 8)  # ✅ Default to 8 for Steal a Brainrot
         
-        if max_players > 0:
-            fill_percent = (playing / max_players) * 100
-            
-            if fill_percent >= 90:  # 90%+ = full
+        # ✅ For 8-player servers, consider 7+ as full
+        if max_players <= 10:  # Small servers (like Steal a Brainrot)
+            if playing >= 7:  # 7-8 players = full
                 full_servers.append(server)
             else:
                 non_full_servers.append(server)
-        else:
-            non_full_servers.append(server)
+        else:  # Larger servers
+            fill_percent = (playing / max_players) * 100
+            if fill_percent >= 90:
+                full_servers.append(server)
+            else:
+                non_full_servers.append(server)
     
     # ✅ SHUFFLE FOR RANDOMIZATION
     random.shuffle(non_full_servers)
