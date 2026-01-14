@@ -138,12 +138,15 @@ def update_cache(place_id, servers, cursor=None):
         playing = server.get("playing", 0)
         max_players = server.get("maxPlayers", 8)  # ✅ Default to 8 for Steal a Brainrot
         
-        # ✅ For 8-player servers, consider 7+ as full
+        # ✅ STRICT FILTER: For 8-player servers, only accept if 6 or fewer players
+        # This leaves room for 2+ players in case server fills while teleporting
         if max_players <= 10:  # Small servers (like Steal a Brainrot)
-            if playing >= 7:  # 7-8 players = full
-                full_servers.append(server)
-            else:
+            if playing <= 5:  # 0-5 players = BEST (room for 3+ players)
                 non_full_servers.append(server)
+            elif playing == 6:  # 6 players = OK (room for 2 players)
+                non_full_servers.append(server)
+            else:  # 7-8 players = FULL, skip these entirely
+                full_servers.append(server)
         else:  # Larger servers
             fill_percent = (playing / max_players) * 100
             if fill_percent >= 90:
@@ -153,10 +156,11 @@ def update_cache(place_id, servers, cursor=None):
     
     # ✅ SHUFFLE FOR RANDOMIZATION
     random.shuffle(non_full_servers)
-    random.shuffle(full_servers)
+    # ✅ DON'T include full servers at all - only return joinable servers
+    # random.shuffle(full_servers)  # Commented out - we don't want full servers
     
-    # ✅ PRIORITIZE NON-FULL SERVERS
-    new_servers = non_full_servers + full_servers
+    # ✅ ONLY RETURN NON-FULL SERVERS (no full servers as backup)
+    new_servers = non_full_servers  # Only servers with 6 or fewer players
     
     place_cache["servers"].extend(new_servers)
     place_cache["cursor"] = cursor
@@ -167,7 +171,7 @@ def update_cache(place_id, servers, cursor=None):
     
     save_cache()
     
-    print(f"[Cache] Added {len(new_servers)} servers (non-full: {len(non_full_servers)}, full: {len(full_servers)}, total: {len(place_cache['servers'])})")
+    print(f"[Cache] Added {len(new_servers)} JOINABLE servers (0-6 players), SKIPPED {len(full_servers)} full servers (7-8 players), total cached: {len(place_cache['servers'])}")
     return len(new_servers)
 
 def background_refill_cache(place_id, exclude_full):
