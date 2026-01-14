@@ -20,8 +20,8 @@ PORT = int(os.environ.get("PORT", 5000))
 # Configuration
 ROBLOX_API_BASE = "https://games.roblox.com/v1/games"
 CACHE_FILE = "server_cache.json"
-CACHE_EXPIRY_MINUTES = int(os.environ.get("CACHE_EXPIRY_MINUTES", 30))
-REQUEST_COOLDOWN = int(os.environ.get("REQUEST_COOLDOWN", 2))
+CACHE_EXPIRY_MINUTES = int(os.environ.get("CACHE_EXPIRY_MINUTES", 45))  # ✅ Increased to 45 min
+REQUEST_COOLDOWN = int(os.environ.get("REQUEST_COOLDOWN", 5))  # ✅ Increased to 5 seconds
 
 # ✅ NEW: Auto-refill settings
 MIN_CACHE_SIZE = 250  # Auto-fetch more when cache drops below this
@@ -71,6 +71,13 @@ def fetch_from_roblox(place_id, cursor=None, exclude_full=False):
     global cache
     
     with cache_lock:
+        # ✅ Check if we're already rate limited
+        last_error_time = cache.get("last_rate_limit", 0)
+        if time.time() - last_error_time < 60:
+            wait_remaining = 60 - (time.time() - last_error_time)
+            print(f"[RateLimit] Still in cooldown, {wait_remaining:.0f}s remaining")
+            return {"error": "rate_limited", "retry_after": int(wait_remaining)}
+        
         # Rate limiting
         time_since_last = time.time() - cache.get("last_request", 0)
         if time_since_last < REQUEST_COOLDOWN:
@@ -92,10 +99,14 @@ def fetch_from_roblox(place_id, cursor=None, exclude_full=False):
             
             if response.status_code == 200:
                 data = response.json()
+                # ✅ Clear rate limit flag on success
+                cache["last_rate_limit"] = 0
                 print(f"[Roblox] Success! Got {len(data.get('data', []))} servers")
                 return data
             elif response.status_code == 429:
-                print(f"[Roblox] Rate limited!")
+                # ✅ Mark when we got rate limited
+                cache["last_rate_limit"] = time.time()
+                print(f"[Roblox] Rate limited! Cooling down for 60s")
                 return {"error": "rate_limited", "retry_after": 60}
             else:
                 print(f"[Roblox] Error: {response.status_code}")
