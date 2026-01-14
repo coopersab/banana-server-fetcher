@@ -120,9 +120,38 @@ def update_cache(place_id, servers, cursor=None):
     
     place_cache = cache["servers"][place_id_str]
     
-    # Add new servers (avoid duplicates)
+    # ✅ Filter and prioritize servers
+    # First, separate full and non-full servers
+    non_full_servers = []
+    full_servers = []
+    
     existing_ids = {s["id"] for s in place_cache["servers"]}
-    new_servers = [s for s in servers if s["id"] not in existing_ids]
+    
+    for server in servers:
+        if server["id"] in existing_ids:
+            continue
+            
+        # Check if server is full or nearly full
+        playing = server.get("playing", 0)
+        max_players = server.get("maxPlayers", 0)
+        
+        if max_players > 0:
+            fill_percent = (playing / max_players) * 100
+            
+            if fill_percent >= 95:  # Server is 95%+ full
+                full_servers.append(server)
+            else:
+                non_full_servers.append(server)
+        else:
+            non_full_servers.append(server)
+    
+    # ✅ Shuffle both lists for randomization
+    import random
+    random.shuffle(non_full_servers)
+    random.shuffle(full_servers)
+    
+    # ✅ Prioritize non-full servers, then add full servers
+    new_servers = non_full_servers + full_servers
     
     place_cache["servers"].extend(new_servers)
     place_cache["cursor"] = cursor
@@ -134,7 +163,7 @@ def update_cache(place_id, servers, cursor=None):
     
     save_cache()
     
-    print(f"[Cache] Added {len(new_servers)} servers (total: {len(place_cache['servers'])})")
+    print(f"[Cache] Added {len(new_servers)} servers (non-full: {len(non_full_servers)}, full: {len(full_servers)}, total: {len(place_cache['servers'])})")
     return len(new_servers)
 
 def background_refill_cache(place_id, exclude_full):
@@ -151,9 +180,16 @@ def background_refill_cache(place_id, exclude_full):
     try:
         print(f"[AutoRefill] Starting background refill for {place_id}...")
         
+        # ✅ Start from random cursor to get variety of servers (not just newest)
         cursor = None
         if place_id_str in cache["servers"]:
             cursor = cache["servers"][place_id_str].get("cursor")
+            # 50% chance to skip ahead to get older servers
+            if cursor and len(cache["servers"][place_id_str]["servers"]) < 100:
+                print(f"[AutoRefill] Using existing cursor to continue pagination")
+            else:
+                # Fetch from beginning to get fresh servers
+                cursor = None
         
         attempts = 0
         max_attempts = 5
