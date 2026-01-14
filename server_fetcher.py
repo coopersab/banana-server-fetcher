@@ -125,9 +125,9 @@ def update_cache(place_id, servers, cursor=None):
     place_cache["cursor"] = cursor
     place_cache["timestamp"] = time.time()
     
-    # Limit cache size (keep only 500 most recent)
-    if len(place_cache["servers"]) > 500:
-        place_cache["servers"] = place_cache["servers"][-500:]
+    # Limit cache size (keep only 1000 most recent)
+    if len(place_cache["servers"]) > 1000:
+        place_cache["servers"] = place_cache["servers"][-1000:]
     
     save_cache()
     
